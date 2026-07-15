@@ -91,7 +91,7 @@ export default function Home() {
         </header>
 
         {selectedEvent ? <EventDetail event={selectedEvent} onBack={() => setSelectedEvent(null)} notify={notify} /> : <>
-        {section === "Resumen" && <Dashboard events={filtered} totals={totals} margin={margin} go={setSection} onNew={() => setShowNew(true)} />}
+        {section === "Resumen" && <Dashboard events={filtered} totals={totals} margin={margin} go={setSection} onNew={() => setShowNew(true)} onOpen={setSelectedEvent} />}
         {section === "Eventos" && <EventsView events={filtered} onNew={() => setShowNew(true)} notify={notify} onOpen={setSelectedEvent} />}
         {section === "Clientes" && <ClientsView events={filtered} notify={notify} />}
         {section === "Presupuestos" && <BudgetsView events={filtered} notify={notify} />}
@@ -108,14 +108,14 @@ export default function Home() {
   );
 }
 
-function Dashboard({ events, totals, margin, go, onNew }: { events: EventRecord[]; totals: { revenue: number; paid: number; costs: number }; margin: number; go: (s: Section) => void; onNew: () => void }) {
+function Dashboard({ events, totals, margin, go, onNew, onOpen }: { events: EventRecord[]; totals: { revenue: number; paid: number; costs: number }; margin: number; go: (s: Section) => void; onNew: () => void; onOpen: (event: EventRecord) => void }) {
   const pending = totals.revenue - totals.paid;
   return <div className="content"><div className="page-toolbar"><p>Información consolidada · actualización en tiempo real</p><button className="primary" onClick={onNew}>＋ Nuevo evento</button></div><section className="kpi-grid">
     <Kpi icon="€" label="Facturación prevista" value={money(totals.revenue)} foot="↑ 12,4%" />
     <Kpi icon="⌁" label="Margen estimado" value={`${margin.toFixed(1)}%`} foot="↑ 2,1 pt" />
     <Kpi icon="◇" label="Eventos activos" value={String(events.length)} foot={`${events.filter(e => e.status === "Confirmado").length} confirmados`} />
     <Kpi icon="▣" label="Anticipos pendientes" value={money(pending)} foot="3 vencimientos próximos" danger />
-  </section><section className="dashboard-grid"><Panel title="Próximos eventos" action="Ver todos" onAction={() => go("Eventos")} className="events-panel"><EventTable events={events.slice(0, 4)} /></Panel><Panel title="Alertas y vencimientos" action="Ver todas" onAction={() => go("Anticipos")}><div className="alerts"><Alert tone="red" icon="◷" title="Anticipo vence hoy · Boda Martínez" detail="Importe pendiente: 9.600 €" /><Alert tone="amber" icon="♨" title="Orden de cocina sin validar · Olympic" detail="Debe validarse antes del 20 de julio" /><Alert tone="amber" icon="!" title="3 tareas críticas · Torre del Rame" detail="Vencen en las próximas 24 horas" /><Alert tone="red" icon="⌁" title="Margen bajo · Bodegas Luzón" detail="Margen estimado: 18,2%" /></div></Panel></section>
+  </section><section className="dashboard-grid"><Panel title="Próximos eventos" action="Ver todos" onAction={() => go("Eventos")} className="events-panel"><EventTable events={events.slice(0, 4)} onOpen={onOpen} /></Panel><Panel title="Alertas y vencimientos" action="Ver todas" onAction={() => go("Anticipos")}><div className="alerts"><Alert tone="red" icon="◷" title="Anticipo vence hoy · Boda Martínez" detail="Importe pendiente: 9.600 €" /><Alert tone="amber" icon="♨" title="Orden de cocina sin validar · Olympic" detail="Debe validarse antes del 20 de julio" /><Alert tone="amber" icon="!" title="3 tareas críticas · Torre del Rame" detail="Vencen en las próximas 24 horas" /><Alert tone="red" icon="⌁" title="Margen bajo · Bodegas Luzón" detail="Margen estimado: 18,2%" /></div></Panel></section>
   <section className="dashboard-grid lower"><Panel title="Rentabilidad por local"><div className="bars">{[["Vive Roda",36],["Olympic",29],["Torre del Rame",32],["Tapeoteca",27]].map(([n,v]) => <div key={String(n)}><strong>{v}%</strong><span style={{ height: `${Number(v)*2.5}px` }}></span><small>{n}</small></div>)}</div></Panel><Panel title="Carga operativa"><div className="load-list">{[["Eventos",67],["Cocina",70],["Montaje",60],["Logística",45]].map(([n,v]) => <div key={String(n)}><label><span>{n}</span><b>{v}%</b></label><i><em style={{ width: `${v}%` }} /></i></div>)}</div></Panel></section></div>;
 }
 
