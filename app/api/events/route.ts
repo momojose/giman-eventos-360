@@ -8,6 +8,15 @@ async function database() {
 export async function GET() {
   try {
     const db = await database();
+    const count = await db.prepare("SELECT COUNT(*) AS total FROM events").first<{ total: number }>();
+    if (!Number(count?.total ?? 0)) {
+      await db.batch([
+        db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (1,'Vive Roda',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (2,'Olympic',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (3,'Torre del Rame',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (4,'Tapeoteca',1)"),
+        db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (1,'Laura Martínez')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (2,'Soltec Energías')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (3,'María Vidal')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (4,'Bodegas Luzón')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (5,'Familia Pérez')"),
+        db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (1,1,1,'Boda Martínez · Navarro','18 jul 2026',180,'Confirmado')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (2,2,2,'Cena corporativa Soltec','22 jul 2026',96,'Operativa')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (3,3,3,'Aniversario Familia Vidal','25 jul 2026',140,'Pendiente anticipo')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (4,4,4,'Presentación Bodegas Luzón','29 jul 2026',65,'Presupuesto')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (5,5,1,'Comunión Vega','2 may 2027',82,'Confirmado')"),
+        db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (1,1,21600,13200,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (2,1,9120,6260,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (3,1,14700,9260,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (4,1,5850,4785,'sent')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (5,1,8200,5100,'accepted')")
+      ]);
+    }
     const result = await db.prepare(`
       SELECT e.id, e.name, c.name AS client, v.name AS venue, e.event_date AS date,
              e.guests AS pax, e.status,
