@@ -54,6 +54,10 @@ export default function Home() {
   const margin = totals.revenue ? ((totals.revenue - totals.costs) / totals.revenue) * 100 : 0;
 
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2600); }
+  function navigate(nextSection: Section) {
+    setSelectedEvent(null);
+    setSection(nextSection);
+  }
   async function addEvent(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -74,8 +78,8 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => setSection("Resumen")} aria-label="Ir al resumen"><span className="brand-mark">G<span>⌁</span></span><strong>GIMAN</strong><small>EVENTOS 360</small></button>
-        <nav>{nav.map(item => <button key={item.label} className={section === item.label ? "active" : ""} onClick={() => setSection(item.label)}><span>{item.icon}</span>{item.label}</button>)}</nav>
+        <button className="brand" onClick={() => navigate("Resumen")} aria-label="Ir al resumen"><span className="brand-mark">G<span>⌁</span></span><strong>GIMAN</strong><small>EVENTOS 360</small></button>
+        <nav>{nav.map(item => <button key={item.label} className={section === item.label && !selectedEvent ? "active" : ""} onClick={() => navigate(item.label)}><span>{item.icon}</span>{item.label}</button>)}</nav>
         <div className="help"><button><span>?</span> Ayuda</button><p>Primera versión · julio 2026</p></div>
       </aside>
 
