@@ -1,3 +1,5 @@
+import { isEditor, privateEventName, privateHeaders, requireEditor, requireSameOriginJson } from "../../editor-auth";
+
 type EventInput = { name?: string; client?: string; venue?: string; date?: string; pax?: number; amount?: number };
 
 async function database() {
@@ -5,18 +7,9 @@ async function database() {
   return env.DB;
 }
 
-export async function GET() {
+export async function GET(request:Request) {
   try {
     const db = await database();
-    const count = await db.prepare("SELECT COUNT(*) AS total FROM events").first<{ total: number }>();
-    if (!Number(count?.total ?? 0)) {
-      await db.batch([
-        db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (1,'Vive Roda',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (2,'Olympic',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (3,'Torre del Rame',1)"), db.prepare("INSERT OR IGNORE INTO venues (id,name,active) VALUES (4,'Tapeoteca',1)"),
-        db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (1,'Laura Martínez')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (2,'Soltec Energías')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (3,'María Vidal')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (4,'Bodegas Luzón')"), db.prepare("INSERT OR IGNORE INTO clients (id,name) VALUES (5,'Familia Pérez')"),
-        db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (1,1,1,'Boda Martínez · Navarro','18 jul 2026',180,'Confirmado')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (2,2,2,'Cena corporativa Soltec','22 jul 2026',96,'Operativa')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (3,3,3,'Aniversario Familia Vidal','25 jul 2026',140,'Pendiente anticipo')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (4,4,4,'Presentación Bodegas Luzón','29 jul 2026',65,'Presupuesto')"), db.prepare("INSERT OR IGNORE INTO events (id,client_id,venue_id,name,event_date,guests,status) VALUES (5,5,1,'Comunión Vega','2 may 2027',82,'Confirmado')"),
-        db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (1,1,21600,13200,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (2,1,9120,6260,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (3,1,14700,9260,'accepted')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (4,1,5850,4785,'sent')"), db.prepare("INSERT INTO budgets (event_id,version,revenue,estimated_cost,status) VALUES (5,1,8200,5100,'accepted')")
-      ]);
-    }
     const result = await db.prepare(`
       SELECT e.id, e.name, c.name AS client, v.name AS venue, e.event_date AS date,
              e.guests AS pax, e.status,
@@ -29,14 +22,20 @@ export async function GET() {
       LEFT JOIN budgets b ON b.id = (SELECT id FROM budgets WHERE event_id = e.id ORDER BY version DESC LIMIT 1)
       ORDER BY e.id DESC
     `).all();
-    return Response.json({ events: result.results });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudieron cargar los eventos" }, { status: 500 });
+    const editor=await isEditor(request);
+    const events=(result.results as Array<Record<string,unknown>&{id:number}>).map(event=>editor?event:{id:event.id,name:privateEventName(event.id),client:"Cliente privado",venue:event.venue,date:event.date,pax:event.pax,status:event.status,amount:0,paid:0,costs:0});
+    return Response.json({ events, editor }, { headers:privateHeaders });
+  } catch {
+    return Response.json({ error: "No se pudieron cargar los eventos" }, { status: 500,headers:privateHeaders });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const denied=await requireEditor(request);
+    if(denied)return denied;
+    const invalid=requireSameOriginJson(request);
+    if(invalid)return invalid;
     const input = (await request.json()) as EventInput;
     const name = input.name?.trim();
     const clientName = input.client?.trim();
@@ -62,7 +61,7 @@ export async function POST(request: Request) {
     await db.prepare("INSERT INTO budgets (event_id, version, revenue, estimated_cost, status) VALUES (?, 1, ?, 0, 'draft')").bind(eventId, amount).run();
 
     return Response.json({ event: { id: eventId, name, client: clientName, venue: venueName, date, pax, status: "Presupuesto", amount, paid: 0, costs: 0 } }, { status: 201 });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo crear el evento" }, { status: 500 });
+  } catch {
+    return Response.json({ error: "No se pudo crear el evento" }, { status: 500,headers:privateHeaders });
   }
 }
