@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Giman Eventos 360",
   description: "Sistema comercial y operativo de eventos de Grupo Giman.",
+  robots: {
+    index: false,
+    follow: false,
+    noarchive: true,
+  },
   other: {
     "codex-preview": "development",
   },
