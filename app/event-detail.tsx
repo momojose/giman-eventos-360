@@ -11,6 +11,7 @@ type Task = { id:number; title:string; owner:string; dueDate:string|null; priori
 type ServiceOrder = { id:number; department:string; instructions:string; status:string; approvedAt:string|null };
 type Closure = { id:number; actualRevenue:number; actualCost:number; notes:string; closedAt:string|null } | null;
 type Operations = {
+  editor?: boolean;
   event: EventRecord & { phone:string; email:string };
   budgets: Budget[];
   payments: Payment[];
@@ -23,7 +24,7 @@ const tabs: TabName[] = ["Datos generales", "Entrevista", "Presupuesto", "Antici
 const departments = ["Hostess / recepción", "Sala", "Cocina", "Montaje", "Decoración", "DJ / audiovisuales", "Animación / música", "Hinchables", "Estaciones gastronómicas", "Proveedores externos"];
 const money = (value:number) => new Intl.NumberFormat("es-ES", { style:"currency", currency:"EUR", maximumFractionDigits:0 }).format(value || 0);
 
-export default function EventDetail({ event, initialTab="Datos generales", onBack, notify, onEventUpdate }:{ event:EventRecord; initialTab?:TabName; onBack:()=>void; notify:(message:string)=>void; onEventUpdate:(event:EventRecord)=>void }) {
+export default function EventDetail({ event, initialTab="Datos generales", onBack, notify, onEventUpdate, canEdit, onRequestEdit }:{ event:EventRecord; initialTab?:TabName; onBack:()=>void; notify:(message:string)=>void; onEventUpdate:(event:EventRecord)=>void; canEdit:boolean; onRequestEdit:()=>void }) {
   const [tab,setTab] = useState<TabName>(initialTab);
   const [operations,setOperations] = useState<Operations|null>(null);
   const [loading,setLoading] = useState(true);
@@ -36,6 +37,10 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
       const response = await fetch(`/api/events/${event.id}/operations`, { cache:"no-store" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "No se pudieron cargar los datos");
+      if (canEdit && body.editor === false) {
+        window.location.reload();
+        return;
+      }
       setOperations(body);
       if (body.event) onEventUpdate(body.event);
     } catch (caught) {
@@ -43,13 +48,17 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
     } finally {
       setLoading(false);
     }
-  }, [event.id, onEventUpdate]);
+  }, [canEdit, event.id, onEventUpdate]);
 
   // The initial server synchronization intentionally starts when the selected event changes.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, [load]);
 
   async function mutate(action:string, payload:Record<string,unknown>) {
+    if (!canEdit) {
+      onRequestEdit();
+      return false;
+    }
     setSaving(true);
     setError("");
     try {
@@ -84,20 +93,35 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
 
   return <div className="content event-detail">
     <button type="button" className="back-link" onClick={onBack}>← Volver a eventos</button>
-    <div className="detail-hero"><div><p className="eyebrow">EXPEDIENTE EV-{String(event.id).padStart(5,"0")}</p><h2>{current.name}</h2><p>{current.client} · {current.venue} · {current.date}</p></div><div className="detail-actions"><Status>{current.status}</Status><button type="button" className="secondary" onClick={() => setTab("Datos generales")}>Editar datos</button><button type="button" className="primary" onClick={() => setTab("Órdenes")}>Órdenes de servicio</button></div></div>
-    <div className="detail-kpis"><div><small>Comensales</small><strong>{current.pax}</strong></div><div><small>Presupuesto</small><strong>{money(revenue)}</strong></div><div><small>Cobrado</small><strong>{money(paid)}</strong></div><div><small>Pendiente</small><strong>{money(pending)}</strong></div><div><small>Margen estimado</small><strong>{margin}%</strong></div></div>
+    <div className="detail-hero"><div><p className="eyebrow">EXPEDIENTE EV-{String(event.id).padStart(5,"0")}</p><h2>{current.name}</h2><p>{current.client} · {current.venue} · {current.date}</p></div><div className="detail-actions"><Status>{current.status}</Status><button type="button" className="secondary" onClick={() => canEdit ? setTab("Datos generales") : onRequestEdit()}>{canEdit ? "Editar datos" : "Activar edición"}</button><button type="button" className="primary" onClick={() => setTab("Órdenes")}>Órdenes de servicio</button></div></div>
+    {canEdit ? <div className="detail-kpis"><div><small>Comensales</small><strong>{current.pax}</strong></div><div><small>Presupuesto</small><strong>{money(revenue)}</strong></div><div><small>Cobrado</small><strong>{money(paid)}</strong></div><div><small>Pendiente</small><strong>{money(pending)}</strong></div><div><small>Margen estimado</small><strong>{margin}%</strong></div></div> : <div className="read-only-banner" role="status"><div><strong>Modo consulta</strong><p>Los contactos, importes y detalles operativos están protegidos.</p></div><button type="button" className="secondary" onClick={onRequestEdit}>Activar edición</button></div>}
     <div className="detail-tabs" role="tablist" aria-label="Apartados del evento">{tabs.map(item => <button type="button" role="tab" aria-selected={tab===item} key={item} className={tab===item?"active":""} onClick={() => setTab(item)}>{item}</button>)}</div>
     {error && <div className="form-error" role="alert"><strong>No se ha podido completar la operación.</strong><span>{error}</span><button type="button" onClick={() => void load()}>Reintentar</button></div>}
     {loading ? <div className="loading-card">Cargando expediente…</div> : <section className="detail-body">
-      {tab === "Datos generales" && <GeneralForm event={current} saving={saving} onSave={data => mutate("event.update",data)} />}
-      {tab === "Entrevista" && <InterviewPanel eventId={event.id} onEventUpdate={onEventUpdate} />}
-      {tab === "Presupuesto" && <BudgetPanel budgets={operations?.budgets ?? []} saving={saving} onSave={data => mutate("budget.create",data)} />}
-      {tab === "Anticipos" && <PaymentPanel payments={operations?.payments ?? []} revenue={revenue} saving={saving} onCreate={data => mutate("payment.create",data)} onToggle={(id,status) => mutate("payment.status",{id,status})} />}
-      {tab === "Tareas" && <TaskPanel tasks={operations?.tasks ?? []} saving={saving} onCreate={data => mutate("task.create",data)} onToggle={(id,completed) => mutate("task.toggle",{id,completed})} />}
-      {tab === "Órdenes" && <OrderPanel orders={operations?.orders ?? []} saving={saving} onSave={data => mutate("order.save",data)} />}
-      {tab === "Cierre" && <ClosurePanel closure={operations?.closure ?? null} revenue={revenue} estimatedCost={costs} saving={saving} onSave={data => mutate("closure.save",data)} />}
+      {tab === "Datos generales" && (canEdit ? <GeneralForm event={current} saving={saving} onSave={data => mutate("event.update",data)} /> : <ReadOnlyGeneral event={current} onRequestEdit={onRequestEdit} />)}
+      {tab === "Entrevista" && (canEdit ? <InterviewPanel eventId={event.id} onEventUpdate={onEventUpdate} /> : <LockedPanel title="Entrevista del evento" onRequestEdit={onRequestEdit} />)}
+      {tab === "Presupuesto" && (canEdit ? <BudgetPanel budgets={operations?.budgets ?? []} saving={saving} onSave={data => mutate("budget.create",data)} /> : <LockedPanel title="Presupuestos y control de versiones" onRequestEdit={onRequestEdit} />)}
+      {tab === "Anticipos" && (canEdit ? <PaymentPanel payments={operations?.payments ?? []} revenue={revenue} saving={saving} onCreate={data => mutate("payment.create",data)} onToggle={(id,status) => mutate("payment.status",{id,status})} /> : <LockedPanel title="Anticipos y vencimientos" onRequestEdit={onRequestEdit} />)}
+      {tab === "Tareas" && (canEdit ? <TaskPanel tasks={operations?.tasks ?? []} saving={saving} onCreate={data => mutate("task.create",data)} onToggle={(id,completed) => mutate("task.toggle",{id,completed})} /> : <LockedPanel title="Tareas y responsables" onRequestEdit={onRequestEdit} />)}
+      {tab === "Órdenes" && (canEdit ? <OrderPanel orders={operations?.orders ?? []} saving={saving} onSave={data => mutate("order.save",data)} /> : <LockedPanel title="Órdenes de servicio" onRequestEdit={onRequestEdit} />)}
+      {tab === "Cierre" && (canEdit ? <ClosurePanel closure={operations?.closure ?? null} revenue={revenue} estimatedCost={costs} saving={saving} onSave={data => mutate("closure.save",data)} /> : <LockedPanel title="Cierre económico y rentabilidad" onRequestEdit={onRequestEdit} />)}
     </section>}
   </div>;
+}
+
+function ReadOnlyGeneral({event,onRequestEdit}:{event:Operations["event"];onRequestEdit:()=>void}) {
+  return <Panel title="Resumen general del evento"><div className="read-only-summary">
+    <div><small>Evento</small><strong>{event.name}</strong></div>
+    <div><small>Cliente</small><strong>{event.client}</strong></div>
+    <div><small>Local</small><strong>{event.venue}</strong></div>
+    <div><small>Fecha</small><strong>{event.date}</strong></div>
+    <div><small>Comensales</small><strong>{event.pax || "—"}</strong></div>
+    <div><small>Estado</small><Status>{event.status}</Status></div>
+  </div><div className="locked-panel"><p>La información de contacto y los datos económicos se ocultan en el enlace público.</p><button type="button" className="primary" onClick={onRequestEdit}>Activar edición</button></div></Panel>;
+}
+
+function LockedPanel({title,onRequestEdit}:{title:string;onRequestEdit:()=>void}) {
+  return <Panel title={title}><div className="locked-panel"><strong>Contenido protegido</strong><p>Introduce la clave de edición para consultar y actualizar este apartado.</p><button type="button" className="primary" onClick={onRequestEdit}>Activar edición</button></div></Panel>;
 }
 
 function GeneralForm({event,saving,onSave}:{event:Operations["event"];saving:boolean;onSave:(data:Record<string,unknown>)=>Promise<boolean>}) {
