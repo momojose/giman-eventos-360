@@ -1,3 +1,5 @@
+import { privateHeaders, requireEditor, requireSameOriginJson } from "../../../../editor-auth";
+
 async function database() {
   const { env } = await import("cloudflare:workers");
   return env.DB;
@@ -6,19 +8,25 @@ async function database() {
 type Context = { params: Promise<{ id: string }> };
 type Payload = Record<string, string | number | boolean | string[]>;
 
-export async function GET(_: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   try {
+    const denied=await requireEditor(request);
+    if(denied)return denied;
     const { id } = await context.params;
     const db = await database();
     const row = await db.prepare("SELECT payload, completion, updated_at AS updatedAt FROM event_interviews WHERE event_id = ?").bind(Number(id)).first<{ payload: string; completion: number; updatedAt: string }>();
-    return Response.json({ interview: row ? { ...row, payload: JSON.parse(row.payload || "{}") } : { payload: {}, completion: 0, updatedAt: null } });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo cargar la entrevista" }, { status: 500 });
+    return Response.json({ interview: row ? { ...row, payload: JSON.parse(row.payload || "{}") } : { payload: {}, completion: 0, updatedAt: null } },{headers:privateHeaders});
+  } catch {
+    return Response.json({ error: "No se pudo cargar la entrevista" }, { status: 500,headers:privateHeaders });
   }
 }
 
 export async function PUT(request: Request, context: Context) {
   try {
+    const denied=await requireEditor(request);
+    if(denied)return denied;
+    const invalid=requireSameOriginJson(request);
+    if(invalid)return invalid;
     const { id } = await context.params;
     const eventId = Number(id);
     const body = (await request.json()) as { payload?: Payload; completion?: number };
@@ -50,7 +58,7 @@ export async function PUT(request: Request, context: Context) {
 
     const record = await db.prepare(`SELECT e.id, e.name, c.name AS client, v.name AS venue, e.event_date AS date, e.guests AS pax, e.status, COALESCE(b.revenue,0) AS amount, COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.event_id=e.id AND p.status='paid'),0) AS paid, COALESCE(b.estimated_cost,0) AS costs FROM events e JOIN clients c ON c.id=e.client_id JOIN venues v ON v.id=e.venue_id LEFT JOIN budgets b ON b.id=(SELECT id FROM budgets WHERE event_id=e.id ORDER BY version DESC LIMIT 1) WHERE e.id=?`).bind(eventId).first();
     return Response.json({ saved: true, completion, event: record });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo guardar la entrevista" }, { status: 500 });
+  } catch {
+    return Response.json({ error: "No se pudo guardar la entrevista" }, { status: 500,headers:privateHeaders });
   }
 }
