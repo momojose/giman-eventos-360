@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import InterviewPanel from "./interview-panel";
 
 type Section = "Resumen" | "Eventos" | "Clientes" | "Presupuestos" | "Anticipos" | "Tareas" | "Órdenes" | "Cierres";
@@ -59,6 +59,10 @@ export default function Home() {
     setSelectedEvent(null);
     setSection(nextSection);
   }
+  const updateSelectedEvent = useCallback((updated: EventRecord) => {
+    setSelectedEvent(updated);
+    setEvents(current => current.map(item => item.id === updated.id ? updated : item));
+  }, []);
   async function addEvent(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -95,7 +99,7 @@ export default function Home() {
           </div>
         </header>
 
-        {selectedEvent ? <EventDetail event={selectedEvent} onBack={() => setSelectedEvent(null)} notify={notify} onEventUpdate={updated => { setSelectedEvent(updated); setEvents(current => current.map(item => item.id === updated.id ? updated : item)); }} /> : <>
+        {selectedEvent ? <EventDetail event={selectedEvent} onBack={() => setSelectedEvent(null)} notify={notify} onEventUpdate={updateSelectedEvent} /> : <>
         {section === "Resumen" && <Dashboard events={filtered} totals={totals} margin={margin} go={setSection} onNew={() => setShowNew(true)} onOpen={setSelectedEvent} />}
         {section === "Eventos" && <EventsView events={filtered} onNew={() => setShowNew(true)} notify={notify} onOpen={setSelectedEvent} />}
         {section === "Clientes" && <ClientsView events={filtered} notify={notify} />}
@@ -139,7 +143,7 @@ function EventDetail({ event, onBack, notify, onEventUpdate }: { event: EventRec
     <button className="back-link" onClick={onBack}>← Volver a eventos</button>
     <div className="detail-hero"><div><p className="eyebrow">EXPEDIENTE EV-{String(event.id).slice(-5)}</p><h2>{event.name}</h2><p>{event.client} · {event.venue} · {event.date}</p></div><div className="detail-actions"><Status>{event.status}</Status><button className="secondary" onClick={() => notify("Edición de datos activada")}>Editar datos</button><button className="primary" onClick={() => notify("Orden de servicio preparada")}>Generar orden</button></div></div>
     <div className="detail-kpis"><div><small>Comensales</small><strong>{event.pax}</strong></div><div><small>Presupuesto</small><strong>{money(event.amount)}</strong></div><div><small>Cobrado</small><strong>{money(event.paid)}</strong></div><div><small>Pendiente</small><strong>{money(pending)}</strong></div><div><small>Margen estimado</small><strong>{margin}%</strong></div></div>
-    <div className="detail-tabs" role="tablist">{tabs.map(item => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>
+    <div className="detail-tabs" role="tablist">{tabs.map(item => <button type="button" role="tab" aria-selected={tab === item} key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div>
     <section className="detail-body">
       {tab === "Datos generales" && <div className="detail-columns"><Panel title="Información del evento"><dl className="data-list"><div><dt>Cliente</dt><dd>{event.client}</dd></div><div><dt>Local y espacio</dt><dd>{event.venue} · Espacio por asignar</dd></div><div><dt>Fecha</dt><dd>{event.date}</dd></div><div><dt>Asistentes</dt><dd>{event.pax} personas</dd></div><div><dt>Tipo de evento</dt><dd>{event.name.toLowerCase().includes("boda") ? "Boda" : "Evento privado / corporativo"}</dd></div><div><dt>Estado comercial</dt><dd><Status>{event.status}</Status></dd></div></dl></Panel><Panel title="Próximos pasos"><div className="timeline"><div className="done"><b>✓</b><span><strong>Ficha creada</strong><small>Datos iniciales registrados</small></span></div><div><b>2</b><span><strong>Validar presupuesto</strong><small>Confirmar menú, servicios y costes</small></span></div><div><b>3</b><span><strong>Programar anticipo</strong><small>Definir importe y vencimiento</small></span></div><div><b>4</b><span><strong>Activar orden de servicio</strong><small>Coordinar cocina, sala y montaje</small></span></div></div></Panel></div>}
       {tab === "Entrevista" && <InterviewPanel eventId={event.id} onEventUpdate={onEventUpdate} />}
