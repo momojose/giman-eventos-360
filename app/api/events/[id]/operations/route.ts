@@ -1,3 +1,5 @@
+import { isEditor, privateEventName, privateHeaders, requireEditor, requireSameOriginJson } from "../../../../editor-auth";
+
 async function database() {
   const { env } = await import("cloudflare:workers");
   return env.DB;
@@ -33,19 +35,27 @@ async function snapshot(db:D1Database,eventId:number) {
   return { event, budgets:budgets.results, payments:payments.results, tasks:tasks.results, orders:orders.results, closure:closure??null };
 }
 
-export async function GET(_:Request,context:Context) {
+export async function GET(request:Request,context:Context) {
   try {
     const { id }=await context.params,eventId=Number(id);
     if (!Number.isInteger(eventId)||eventId<1) return Response.json({error:"Evento no válido"},{status:400});
     const db=await database(),result=await snapshot(db,eventId);
-    return result?Response.json(result):Response.json({error:"Evento no encontrado"},{status:404});
-  } catch (error) {
-    return Response.json({error:error instanceof Error?error.message:"No se pudo cargar el expediente"},{status:500});
+    if(!result)return Response.json({error:"Evento no encontrado"},{status:404});
+    if(await isEditor(request))return Response.json({...result,editor:true},{headers:privateHeaders});
+    const eventRecord=result.event as Record<string,unknown>&{id:number};
+    const safe={editor:false,event:{id:eventRecord.id,name:privateEventName(eventId),client:"Cliente privado",phone:"",email:"",venue:eventRecord.venue,date:eventRecord.date,pax:eventRecord.pax,status:eventRecord.status,amount:0,paid:0,costs:0},budgets:[],payments:[],tasks:[],orders:(result.orders as Array<Record<string,unknown>>).map(order=>({id:order.id,department:order.department,instructions:"Contenido disponible en modo edición",status:order.status,approvedAt:order.approvedAt})),closure:null};
+    return Response.json(safe,{headers:privateHeaders});
+  } catch {
+    return Response.json({error:"No se pudo cargar el expediente"},{status:500,headers:privateHeaders});
   }
 }
 
 export async function POST(request:Request,context:Context) {
   try {
+    const denied=await requireEditor(request);
+    if(denied)return denied;
+    const invalid=requireSameOriginJson(request);
+    if(invalid)return invalid;
     const { id }=await context.params,eventId=Number(id),input=(await request.json()) as Input,action=text(input.action);
     if (!Number.isInteger(eventId)||eventId<1) return Response.json({error:"Evento no válido"},{status:400});
     const db=await database();
@@ -98,7 +108,7 @@ export async function POST(request:Request,context:Context) {
 
     const result=await snapshot(db,eventId);
     return Response.json(result);
-  } catch (error) {
-    return Response.json({error:error instanceof Error?error.message:"No se pudo guardar el expediente"},{status:500});
+  } catch {
+    return Response.json({error:"No se pudo guardar el expediente"},{status:500,headers:privateHeaders});
   }
 }
