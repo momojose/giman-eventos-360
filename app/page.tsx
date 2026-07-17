@@ -12,12 +12,46 @@ const nav: { label: Section; icon: string }[] = [
   { label: "Órdenes", icon: "▤" }, { label: "Cierres", icon: "▥" },
 ];
 
-export type EventRecord = { id: number; name: string; client: string; venue: string; date: string; pax: number; status: string; amount: number; paid: number; costs: number };
+export type CalendarStatus = "not_configured" | "pending" | "syncing" | "synced" | "partial" | "error";
+export type EventRecord = {
+  id: number;
+  name: string;
+  client: string;
+  venue: string;
+  date: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  endDate?: string | null;
+  timezone?: string | null;
+  pax: number;
+  status: string;
+  amount: number;
+  paid: number;
+  costs: number;
+  calendarStatus?: CalendarStatus;
+  calendarDirty?: boolean;
+  calendarSyncedAt?: string | null;
+};
 
 type TaskRecord = { id:number;title:string;event:string;owner:string;due:string;priority:string;done:boolean|number };
 
 const money = (n: number) => new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
 const priorityLabel = (value:string) => ({low:"Baja",medium:"Media",high:"Alta",critical:"Crítica"} as Record<string,string>)[value] ?? value;
+const calendarLabel = (value:CalendarStatus) => ({not_configured:"Sin configurar",pending:"Pendiente",syncing:"Sincronizando",synced:"Sincronizado",partial:"Parcial",error:"Con incidencia"} as Record<CalendarStatus,string>)[value];
+
+function formatDate(value:string) {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if(!match)return value;
+  return new Intl.DateTimeFormat("es-ES",{day:"2-digit",month:"short",year:"numeric"}).format(new Date(Number(match[1]),Number(match[2])-1,Number(match[3])));
+}
+
+function formatSchedule(event:EventRecord) {
+  const day=formatDate(event.date);
+  if(!event.startTime)return day;
+  const end=event.endTime?`–${event.endTime}`:"";
+  const nextDay=event.endDate&&event.endDate!==event.date?` · hasta ${formatDate(event.endDate)}`:"";
+  return `${day} · ${event.startTime}${end}${nextDay}`;
+}
 
 export default function Home() {
   const [section, setSection] = useState<Section>("Resumen");
@@ -33,6 +67,7 @@ export default function Home() {
   const [showAccess,setShowAccess]=useState(false);
   const [accessError,setAccessError]=useState("");
   const [authBusy,setAuthBusy]=useState(false);
+  const [calendarBulkBusy,setCalendarBulkBusy]=useState(false);
 
   useEffect(() => {
     fetch("/api/events")
@@ -66,6 +101,31 @@ export default function Home() {
     try{const response=await fetch("/api/auth/editor",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({code})});const body=await response.json();if(!response.ok)throw new Error(body.error||"No se pudo activar la edición");window.location.reload()}catch(error){setAccessError(error instanceof Error?error.message:"No se pudo activar la edición");setAuthBusy(false)}
   }
   async function deactivateEditor(){setAuthBusy(true);await fetch("/api/auth/editor",{method:"DELETE"});window.location.reload()}
+  async function refreshEvents(){
+    const response=await fetch("/api/events",{cache:"no-store"});
+    if(!response.ok)throw new Error("No se pudo actualizar la agenda");
+    const body=(await response.json()) as {events?:EventRecord[];editor?:boolean};
+    setEvents(body.events??[]);
+    if(editor&&!body.editor)window.location.reload();
+  }
+  async function syncPendingCalendars(){
+    if(!editor){requestEdit();return}
+    setCalendarBulkBusy(true);
+    try{
+      const response=await fetch("/api/calendar/sync",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({scope:"dirty"})});
+      const body=await response.json() as {error?:string;processed?:number;synced?:number;failed?:number;summary?:{processed?:number;synced?:number;failed?:number}};
+      if(!response.ok)throw new Error(body.error||"No se pudo sincronizar Calendar");
+      const result=body.summary??body,processed=Number(result.processed??0),synced=Number(result.synced??0),failed=Number(result.failed??0);
+      if(!processed)notify("No hay eventos pendientes de sincronizar");
+      else if(failed)notify(`${synced} sincronizados · ${failed} con incidencia`);
+      else notify(`${synced} eventos sincronizados con Calendar`);
+      await refreshEvents();
+    }catch(error){
+      notify(error instanceof Error?error.message:"No se pudo sincronizar Calendar");
+    }finally{
+      setCalendarBulkBusy(false);
+    }
+  }
   const updateSelectedEvent = useCallback((updated: EventRecord) => {
     setSelectedEvent(updated);
     setEvents(current => current.map(item => item.id === updated.id ? updated : item));
@@ -73,7 +133,7 @@ export default function Home() {
   async function addEvent(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    const draft = { name: String(data.get("name")), client: String(data.get("client")), venue: String(data.get("venue")), date: String(data.get("date")), pax: Number(data.get("pax")), amount: Number(data.get("amount")) };
+    const draft = { name: String(data.get("name")), client: String(data.get("client")), venue: String(data.get("venue")), date: String(data.get("date")), startTime:String(data.get("startTime")??""),endTime:String(data.get("endTime")??""),endDate:String(data.get("endDate")??""), pax: Number(data.get("pax")), amount: Number(data.get("amount")) };
     try {
       const response = await fetch("/api/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) });
       if (!response.ok) throw new Error("No se pudo guardar");
@@ -110,7 +170,7 @@ export default function Home() {
 
         {selectedEvent ? <EventDetail event={selectedEvent} initialTab={selectedEventTab} canEdit={editor} onRequestEdit={requestEdit} onBack={() => setSelectedEvent(null)} notify={notify} onEventUpdate={updateSelectedEvent} /> : <>
         {section === "Resumen" && <Dashboard events={filtered} totals={totals} margin={margin} canEdit={editor} go={setSection} onNew={requestNew} onOpen={event => openEvent(event)} />}
-        {section === "Eventos" && <EventsView events={filtered} onNew={requestNew} notify={notify} onOpen={event => openEvent(event)} />}
+        {section === "Eventos" && <EventsView events={filtered} onNew={requestNew} canEdit={editor} calendarBusy={calendarBulkBusy} onRequestEdit={requestEdit} onCalendarSync={()=>void syncPendingCalendars()} onOpen={event => openEvent(event)} />}
         {section === "Clientes" && <ClientsView events={filtered} canEdit={editor} onOpen={event => openEvent(event)} />}
         {section === "Presupuestos" && <BudgetsView events={filtered} canEdit={editor} onRequestEdit={requestEdit} onOpen={event => openEvent(event,"Presupuesto")} />}
         {section === "Anticipos" && <PaymentsView events={filtered} canEdit={editor} onRequestEdit={requestEdit} onOpen={event => openEvent(event,"Anticipos")} />}
@@ -120,7 +180,7 @@ export default function Home() {
         </>}
       </main>
 
-      {showNew && editor && <div className="modal-backdrop" onMouseDown={() => setShowNew(false)}><form className="modal" onSubmit={addEvent} onMouseDown={e => e.stopPropagation()}><div className="modal-title"><div><p className="eyebrow">NUEVO EXPEDIENTE</p><h2>Crear evento</h2></div><button type="button" onClick={() => setShowNew(false)}>×</button></div><div className="form-grid"><label>Nombre del evento<input name="name" required placeholder="Ej. Boda García · López" /></label><label>Cliente<input name="client" required placeholder="Nombre o empresa" /></label><label>Local<select name="venue">{venues.slice(1).map(v => <option key={v}>{v}</option>)}</select></label><label>Fecha<input name="date" type="date" required /></label><label>Comensales<input name="pax" type="number" required min="1" /></label><label>Importe previsto (€)<input name="amount" type="number" required min="0" step="0.01" /></label></div><div className="modal-footer"><button type="button" className="secondary" onClick={() => setShowNew(false)}>Cancelar</button><button className="primary">Crear evento y abrir entrevista</button></div></form></div>}
+      {showNew && editor && <div className="modal-backdrop" onMouseDown={() => setShowNew(false)}><form className="modal" onSubmit={addEvent} onMouseDown={e => e.stopPropagation()}><div className="modal-title"><div><p className="eyebrow">NUEVO EXPEDIENTE</p><h2>Crear evento</h2></div><button type="button" onClick={() => setShowNew(false)}>×</button></div><div className="form-grid"><label>Nombre del evento<input name="name" required placeholder="Ej. Boda García · López" /></label><label>Cliente<input name="client" required placeholder="Nombre o empresa" /></label><label>Local<select name="venue">{venues.slice(1).map(v => <option key={v}>{v}</option>)}</select></label><label>Fecha<input name="date" type="date" required /></label><label>Hora de inicio<input name="startTime" type="time" /></label><label>Hora de finalización<input name="endTime" type="time" /></label><label>Fecha final, si cambia de día<input name="endDate" type="date" /></label><label>Comensales<input name="pax" type="number" required min="1" /></label><label>Importe previsto (€)<input name="amount" type="number" required min="0" step="0.01" /></label><p className="form-hint wide">Si todavía no conoces el horario, el evento se preparará en Calendar como reserva de día completo. Podrás concretarlo desde la entrevista.</p></div><div className="modal-footer"><button type="button" className="secondary" onClick={() => setShowNew(false)}>Cancelar</button><button className="primary">Crear evento y abrir entrevista</button></div></form></div>}
       {showAccess && <div className="modal-backdrop" onMouseDown={()=>setShowAccess(false)}><form className="modal access-modal" onSubmit={activateEditor} onMouseDown={event=>event.stopPropagation()}><div className="modal-title"><div><p className="eyebrow">ACCESO OPERATIVO</p><h2>Activar modo edición</h2></div><button type="button" onClick={()=>setShowAccess(false)}>×</button></div><p>Introduce la clave compartida únicamente con el equipo autorizado. La sesión de edición permanecerá activa durante 12 horas.</p><label>Clave de edición<input name="code" type="password" autoComplete="current-password" required autoFocus /></label>{accessError&&<div className="access-error" role="alert">{accessError}</div>}<div className="modal-footer"><button type="button" className="secondary" onClick={()=>setShowAccess(false)}>Cancelar</button><button className="primary" disabled={authBusy}>{authBusy?"Comprobando…":"Entrar para editar"}</button></div></form></div>}
       {toast && <div className="toast">✓ {toast}</div>}
     </div>
@@ -142,10 +202,10 @@ function Kpi({ icon,label,value,foot,danger=false }: { icon:string;label:string;
 function Panel({ title, action, onAction, className="", children }: { title:string;action?:string;onAction?:()=>void;className?:string;children:React.ReactNode }) { return <article className={`panel ${className}`}><div className="panel-head"><h2>{title}</h2>{action && <button onClick={onAction}>{action} ›</button>}</div>{children}</article>; }
 function Alert({tone,icon,title,detail}:{tone:string;icon:string;title:string;detail:string}) { return <button className="alert"><span className={tone}>{icon}</span><div><strong>{title}</strong><small>{detail}</small></div><b>›</b></button>; }
 function Status({ children }:{children:React.ReactNode}) { const key=String(children).toLowerCase().replaceAll(" ","-"); return <span className={`status ${key}`}>{children}</span>; }
-function EventTable({ events, onOpen }:{events:EventRecord[];onOpen?:(event:EventRecord)=>void}) { return <div className="table-wrap"><table><thead><tr><th>Evento</th><th>Local</th><th>Fecha</th><th>Pax</th><th>Estado</th><th></th></tr></thead><tbody>{events.map(e => <tr key={e.id} className={onOpen ? "clickable-row" : ""} onClick={() => onOpen?.(e)}><td><strong>{e.name}</strong><small>{e.client}</small></td><td>{e.venue}</td><td>{e.date}</td><td>{e.pax}</td><td><Status>{e.status}</Status></td><td>{onOpen ? <button className="row-open" aria-label={`Abrir ${e.name}`}>›</button> : "•••"}</td></tr>)}</tbody></table></div>; }
+function EventTable({ events, onOpen, showCalendar=false }:{events:EventRecord[];onOpen?:(event:EventRecord)=>void;showCalendar?:boolean}) { return <div className="table-wrap"><table><thead><tr><th>Evento</th><th>Local</th><th>Fecha y hora</th><th>Pax</th><th>Estado</th>{showCalendar&&<th>Calendar</th>}<th></th></tr></thead><tbody>{events.map(e => <tr key={e.id} className={onOpen ? "clickable-row" : ""} onClick={() => onOpen?.(e)}><td><strong>{e.name}</strong><small>{e.client}</small></td><td>{e.venue}</td><td>{formatSchedule(e)}</td><td>{e.pax}</td><td><Status>{e.status}</Status></td>{showCalendar&&<td>{e.calendarStatus?<span className={`calendar-list-status ${e.calendarStatus}`}>{calendarLabel(e.calendarStatus)}{e.calendarDirty?" · cambios":""}</span>:<span className="calendar-list-status pending">Sin consultar</span>}</td>}<td>{onOpen ? <button className="row-open" aria-label={`Abrir ${e.name}`}>›</button> : "•••"}</td></tr>)}</tbody></table></div>; }
 
 function ViewShell({ title, intro, action, children }:{title:string;intro:string;action?:React.ReactNode;children:React.ReactNode}) { return <div className="content"><div className="view-heading"><div><h2>{title}</h2><p>{intro}</p></div>{action}</div>{children}</div>; }
-function EventsView({events,onNew,notify,onOpen}:{events:EventRecord[];onNew:()=>void;notify:(s:string)=>void;onOpen:(event:EventRecord)=>void}) { return <ViewShell title="Agenda de eventos" intro="Del primer contacto al cierre económico, en un único expediente." action={<button className="primary" onClick={onNew}>＋ Nuevo evento</button>}><div className="stage-row">{[["Prospectos",1],["Presupuestados",1],["Confirmados",2],["En operación",1]].map(x=><div key={String(x[0])}><small>{x[0]}</small><strong>{x[1]}</strong></div>)}</div><Panel title="Todos los eventos"><EventTable events={events} onOpen={onOpen}/><button className="text-action" onClick={()=>notify("Calendario actualizado")}>Actualizar calendario</button></Panel></ViewShell>; }
+function EventsView({events,onNew,canEdit,calendarBusy,onRequestEdit,onCalendarSync,onOpen}:{events:EventRecord[];onNew:()=>void;canEdit:boolean;calendarBusy:boolean;onRequestEdit:()=>void;onCalendarSync:()=>void;onOpen:(event:EventRecord)=>void}) { return <ViewShell title="Agenda de eventos" intro="Del primer contacto al cierre económico, en un único expediente." action={<div className="view-actions">{canEdit?<button type="button" className="secondary" disabled={calendarBusy} aria-busy={calendarBusy} onClick={onCalendarSync}>{calendarBusy?"Sincronizando…":"↻ Sincronizar pendientes"}</button>:<button type="button" className="secondary" onClick={onRequestEdit}>Activar Calendar</button>}<button className="primary" onClick={onNew}>＋ Nuevo evento</button></div>}><div className="stage-row">{[["Prospectos",1],["Presupuestados",1],["Confirmados",2],["En operación",1]].map(x=><div key={String(x[0])}><small>{x[0]}</small><strong>{x[1]}</strong></div>)}</div><Panel title="Todos los eventos"><EventTable events={events} onOpen={onOpen} showCalendar={canEdit}/></Panel></ViewShell>; }
 function ClientsView({events,onOpen,canEdit}:{events:EventRecord[];onOpen:(event:EventRecord)=>void;canEdit:boolean}) { const clients=[...new Map(events.map(e=>[e.client,e])).values()]; return <ViewShell title="Clientes" intro="Historial comercial, facturación y próximos pasos."><div className="card-grid">{clients.map(c=><article className="entity-card" key={c.client}><div className="entity-avatar">{c.client.split(" ").map(x=>x[0]).slice(0,2).join("")}</div><div><h3>{c.client}</h3><p>{c.name}</p><small>{c.venue}{canEdit?` · ${money(c.amount)}`:""}</small></div><button type="button" aria-label={`Abrir ficha de ${c.client}`} onClick={()=>onOpen(c)}>›</button></article>)}</div></ViewShell>; }
 function BudgetsView({events,onOpen,canEdit,onRequestEdit}:{events:EventRecord[];onOpen:(event:EventRecord)=>void;canEdit:boolean;onRequestEdit:()=>void}) { if(!canEdit)return <ProtectedView title="Presupuestos" intro="Versiones, aceptación y trazabilidad de cada propuesta." onRequestEdit={onRequestEdit}/>; return <ViewShell title="Presupuestos" intro="Versiones, aceptación y trazabilidad de cada propuesta."><Panel title="Presupuestos vigentes"><div className="table-wrap"><table><thead><tr><th>Evento</th><th>Importe actual</th><th>Coste previsto</th><th>Margen</th><th>Estado</th><th></th></tr></thead><tbody>{events.map(e=><tr key={e.id}><td><strong>{e.name}</strong><small>{e.client}</small></td><td>{money(e.amount)}</td><td>{money(e.costs)}</td><td>{e.amount?Math.round((e.amount-e.costs)/e.amount*100):0}%</td><td><Status>{e.status}</Status></td><td><button className="mini" onClick={()=>onOpen(e)}>Abrir versiones</button></td></tr>)}</tbody></table></div></Panel></ViewShell>; }
 function PaymentsView({events,onOpen,canEdit,onRequestEdit}:{events:EventRecord[];onOpen:(event:EventRecord)=>void;canEdit:boolean;onRequestEdit:()=>void}) { if(!canEdit)return <ProtectedView title="Anticipos y vencimientos" intro="Control de cobros previstos, recibidos y pendientes." onRequestEdit={onRequestEdit}/>; return <ViewShell title="Anticipos y vencimientos" intro="Control de cobros previstos, recibidos y pendientes."><div className="summary-strip"><div><small>Total contratado</small><strong>{money(events.reduce((a,e)=>a+e.amount,0))}</strong></div><div><small>Cobrado</small><strong>{money(events.reduce((a,e)=>a+e.paid,0))}</strong></div><div><small>Pendiente</small><strong>{money(events.reduce((a,e)=>a+e.amount-e.paid,0))}</strong></div></div><Panel title="Plan de cobros"><div className="payment-list">{events.map(e=><div key={e.id}><div><strong>{e.name}</strong><small>{e.venue} · {e.date}</small></div><div><b>{money(e.paid)} / {money(e.amount)}</b><span className="progress"><i style={{width:`${Math.min(100,e.amount?e.paid/e.amount*100:0)}%`}}/></span></div><button className="mini" onClick={()=>onOpen(e)}>Gestionar cobros</button></div>)}</div></Panel></ViewShell>; }

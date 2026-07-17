@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import InterviewPanel from "./interview-panel";
-import type { EventRecord } from "./page";
+import type { CalendarStatus, EventRecord } from "./page";
 
 type TabName = "Datos generales" | "Entrevista" | "Presupuesto" | "Anticipos" | "Tareas" | "Órdenes" | "Cierre";
 type Budget = { id:number; version:number; revenue:number; estimatedCost:number; status:string; createdAt:string };
@@ -10,6 +10,8 @@ type Payment = { id:number; amount:number; dueDate:string; paidAt:string|null; s
 type Task = { id:number; title:string; owner:string; dueDate:string|null; priority:string; completed:number|boolean };
 type ServiceOrder = { id:number; department:string; instructions:string; status:string; approvedAt:string|null };
 type Closure = { id:number; actualRevenue:number; actualCost:number; notes:string; closedAt:string|null } | null;
+type CalendarTarget = { key:"master"|"venue"; label:string; status:CalendarStatus; htmlLink?:string|null; syncedAt?:string|null; error?:string|null };
+type CalendarState = { status:CalendarStatus; dirty:boolean; syncedAt?:string|null; error?:string|null; targets:CalendarTarget[] };
 type Operations = {
   editor?: boolean;
   event: EventRecord & { phone:string; email:string };
@@ -23,6 +25,28 @@ type Operations = {
 const tabs: TabName[] = ["Datos generales", "Entrevista", "Presupuesto", "Anticipos", "Tareas", "Órdenes", "Cierre"];
 const departments = ["Hostess / recepción", "Sala", "Cocina", "Montaje", "Decoración", "DJ / audiovisuales", "Animación / música", "Hinchables", "Estaciones gastronómicas", "Proveedores externos"];
 const money = (value:number) => new Intl.NumberFormat("es-ES", { style:"currency", currency:"EUR", maximumFractionDigits:0 }).format(value || 0);
+const calendarStatusLabel = (value:CalendarStatus) => ({not_configured:"Sin configurar",pending:"Pendiente",syncing:"Sincronizando",synced:"Sincronizado",partial:"Sincronización parcial",error:"Con incidencia"} as Record<CalendarStatus,string>)[value];
+
+function formatDate(value:string) {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if(!match)return value;
+  return new Intl.DateTimeFormat("es-ES",{day:"2-digit",month:"long",year:"numeric"}).format(new Date(Number(match[1]),Number(match[2])-1,Number(match[3])));
+}
+
+function formatSchedule(event:Pick<EventRecord,"date"|"startTime"|"endTime"|"endDate">) {
+  const day=formatDate(event.date);
+  if(!event.startTime)return `${day} · día completo`;
+  const end=event.endTime?`–${event.endTime}`:"";
+  const endDay=event.endDate&&event.endDate!==event.date?` · finaliza ${formatDate(event.endDate)}`:"";
+  return `${day} · ${event.startTime}${end}${endDay}`;
+}
+
+function formatSyncTime(value?:string|null) {
+  if(!value)return "Todavía no sincronizado";
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return value;
+  return new Intl.DateTimeFormat("es-ES",{dateStyle:"short",timeStyle:"short"}).format(date);
+}
 
 export default function EventDetail({ event, initialTab="Datos generales", onBack, notify, onEventUpdate, canEdit, onRequestEdit }:{ event:EventRecord; initialTab?:TabName; onBack:()=>void; notify:(message:string)=>void; onEventUpdate:(event:EventRecord)=>void; canEdit:boolean; onRequestEdit:()=>void }) {
   const [tab,setTab] = useState<TabName>(initialTab);
@@ -30,6 +54,25 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
   const [loading,setLoading] = useState(true);
   const [error,setError] = useState("");
   const [saving,setSaving] = useState(false);
+  const [calendar,setCalendar] = useState<CalendarState|null>(null);
+  const [calendarLoading,setCalendarLoading] = useState(false);
+  const [calendarBusy,setCalendarBusy] = useState(false);
+  const [calendarError,setCalendarError] = useState("");
+  const eventRef=useRef(event);
+
+  useEffect(()=>{eventRef.current=event},[event]);
+
+  const applyEventUpdate=useCallback((updated:EventRecord)=>{
+    const merged={...eventRef.current,...updated};
+    eventRef.current=merged;
+    setOperations(current=>current?{...current,event:{...current.event,...updated}}:current);
+    onEventUpdate(merged);
+  },[onEventUpdate]);
+
+  const applyCalendar=useCallback((next:CalendarState)=>{
+    setCalendar(next);
+    applyEventUpdate({...eventRef.current,calendarStatus:next.status,calendarDirty:next.dirty,calendarSyncedAt:next.syncedAt??null});
+  },[applyEventUpdate]);
 
   const load = useCallback(async () => {
     setError("");
@@ -42,17 +85,60 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
         return;
       }
       setOperations(body);
-      if (body.event) onEventUpdate(body.event);
+      if (body.event) applyEventUpdate(body.event);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudieron cargar los datos");
     } finally {
       setLoading(false);
     }
-  }, [canEdit, event.id, onEventUpdate]);
+  }, [applyEventUpdate, canEdit, event.id]);
+
+  const loadCalendar=useCallback(async()=>{
+    if(!canEdit)return;
+    setCalendarLoading(true);
+    setCalendarError("");
+    try{
+      const response=await fetch(`/api/events/${event.id}/calendar`,{cache:"no-store"});
+      const body=await response.json() as {calendar?:CalendarState;error?:string};
+      if(!response.ok)throw new Error(body.error||"No se pudo consultar Calendar");
+      if(!body.calendar)throw new Error("Calendar no devolvió un estado válido");
+      applyCalendar(body.calendar);
+    }catch(caught){
+      setCalendarError(caught instanceof Error?caught.message:"No se pudo consultar Calendar");
+    }finally{
+      setCalendarLoading(false);
+    }
+  },[applyCalendar,canEdit,event.id]);
 
   // The initial server synchronization intentionally starts when the selected event changes.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, [load]);
+  // Calendar state is loaded from the external service only for authenticated editors.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if(canEdit)void loadCalendar(); }, [canEdit,loadCalendar]);
+
+  async function syncCalendar(){
+    if(!canEdit){onRequestEdit();return}
+    setCalendarBusy(true);
+    setCalendarError("");
+    try{
+      const response=await fetch(`/api/events/${event.id}/calendar/sync`,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+      const body=await response.json() as {calendar?:CalendarState;error?:string};
+      if(!response.ok)throw new Error(body.error||"No se pudo sincronizar Calendar");
+      if(!body.calendar)throw new Error("Calendar no devolvió un estado válido");
+      applyCalendar(body.calendar);
+      if(body.calendar.status==="synced")notify("Evento sincronizado con Calendar");
+      else if(body.calendar.status==="partial")notify("Calendar actualizado parcialmente; revisa el detalle");
+      else if(body.calendar.status==="not_configured")notify("Calendar necesita completar su configuración");
+      else notify("Sincronización procesada; revisa el estado");
+    }catch(caught){
+      const message=caught instanceof Error?caught.message:"No se pudo sincronizar Calendar";
+      setCalendarError(message);
+      notify(message);
+    }finally{
+      setCalendarBusy(false);
+    }
+  }
 
   async function mutate(action:string, payload:Record<string,unknown>) {
     if (!canEdit) {
@@ -70,7 +156,8 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "No se pudo guardar");
       setOperations(body);
-      if (body.event) onEventUpdate(body.event);
+      if (body.event) applyEventUpdate(body.event);
+      if(action==="event.update")void loadCalendar();
       notify("Cambios guardados correctamente");
       return true;
     } catch (caught) {
@@ -93,13 +180,14 @@ export default function EventDetail({ event, initialTab="Datos generales", onBac
 
   return <div className="content event-detail">
     <button type="button" className="back-link" onClick={onBack}>← Volver a eventos</button>
-    <div className="detail-hero"><div><p className="eyebrow">EXPEDIENTE EV-{String(event.id).padStart(5,"0")}</p><h2>{current.name}</h2><p>{current.client} · {current.venue} · {current.date}</p></div><div className="detail-actions"><Status>{current.status}</Status><button type="button" className="secondary" onClick={() => canEdit ? setTab("Datos generales") : onRequestEdit()}>{canEdit ? "Editar datos" : "Activar edición"}</button><button type="button" className="primary" onClick={() => setTab("Órdenes")}>Órdenes de servicio</button></div></div>
+    <div className="detail-hero"><div><p className="eyebrow">EXPEDIENTE EV-{String(event.id).padStart(5,"0")}</p><h2>{current.name}</h2><p>{current.client} · {current.venue} · {formatSchedule(current)}</p></div><div className="detail-actions"><Status>{current.status}</Status><button type="button" className="secondary" onClick={() => canEdit ? setTab("Datos generales") : onRequestEdit()}>{canEdit ? "Editar datos" : "Activar edición"}</button><button type="button" className="primary" onClick={() => setTab("Órdenes")}>Órdenes de servicio</button></div></div>
     {canEdit ? <div className="detail-kpis"><div><small>Comensales</small><strong>{current.pax}</strong></div><div><small>Presupuesto</small><strong>{money(revenue)}</strong></div><div><small>Cobrado</small><strong>{money(paid)}</strong></div><div><small>Pendiente</small><strong>{money(pending)}</strong></div><div><small>Margen estimado</small><strong>{margin}%</strong></div></div> : <div className="read-only-banner" role="status"><div><strong>Modo consulta</strong><p>Los contactos, importes y detalles operativos están protegidos.</p></div><button type="button" className="secondary" onClick={onRequestEdit}>Activar edición</button></div>}
+    {canEdit&&<CalendarSyncCard calendar={calendar} loading={calendarLoading} busy={calendarBusy} error={calendarError} onSync={()=>void syncCalendar()} onReload={()=>void loadCalendar()} />}
     <div className="detail-tabs" role="tablist" aria-label="Apartados del evento">{tabs.map(item => <button type="button" role="tab" aria-selected={tab===item} key={item} className={tab===item?"active":""} onClick={() => setTab(item)}>{item}</button>)}</div>
     {error && <div className="form-error" role="alert"><strong>No se ha podido completar la operación.</strong><span>{error}</span><button type="button" onClick={() => void load()}>Reintentar</button></div>}
     {loading ? <div className="loading-card">Cargando expediente…</div> : <section className="detail-body">
       {tab === "Datos generales" && (canEdit ? <GeneralForm event={current} saving={saving} onSave={data => mutate("event.update",data)} /> : <ReadOnlyGeneral event={current} onRequestEdit={onRequestEdit} />)}
-      {tab === "Entrevista" && (canEdit ? <InterviewPanel eventId={event.id} onEventUpdate={onEventUpdate} /> : <LockedPanel title="Entrevista del evento" onRequestEdit={onRequestEdit} />)}
+      {tab === "Entrevista" && (canEdit ? <InterviewPanel eventId={event.id} onEventUpdate={applyEventUpdate} onSaved={()=>void loadCalendar()} /> : <LockedPanel title="Entrevista del evento" onRequestEdit={onRequestEdit} />)}
       {tab === "Presupuesto" && (canEdit ? <BudgetPanel budgets={operations?.budgets ?? []} saving={saving} onSave={data => mutate("budget.create",data)} /> : <LockedPanel title="Presupuestos y control de versiones" onRequestEdit={onRequestEdit} />)}
       {tab === "Anticipos" && (canEdit ? <PaymentPanel payments={operations?.payments ?? []} revenue={revenue} saving={saving} onCreate={data => mutate("payment.create",data)} onToggle={(id,status) => mutate("payment.status",{id,status})} /> : <LockedPanel title="Anticipos y vencimientos" onRequestEdit={onRequestEdit} />)}
       {tab === "Tareas" && (canEdit ? <TaskPanel tasks={operations?.tasks ?? []} saving={saving} onCreate={data => mutate("task.create",data)} onToggle={(id,completed) => mutate("task.toggle",{id,completed})} /> : <LockedPanel title="Tareas y responsables" onRequestEdit={onRequestEdit} />)}
@@ -114,7 +202,7 @@ function ReadOnlyGeneral({event,onRequestEdit}:{event:Operations["event"];onRequ
     <div><small>Evento</small><strong>{event.name}</strong></div>
     <div><small>Cliente</small><strong>{event.client}</strong></div>
     <div><small>Local</small><strong>{event.venue}</strong></div>
-    <div><small>Fecha</small><strong>{event.date}</strong></div>
+    <div><small>Fecha</small><strong>{formatDate(event.date)}</strong></div>
     <div><small>Comensales</small><strong>{event.pax || "—"}</strong></div>
     <div><small>Estado</small><Status>{event.status}</Status></div>
   </div><div className="locked-panel"><p>La información de contacto y los datos económicos se ocultan en el enlace público.</p><button type="button" className="primary" onClick={onRequestEdit}>Activar edición</button></div></Panel>;
@@ -130,17 +218,31 @@ function GeneralForm({event,saving,onSave}:{event:Operations["event"];saving:boo
     const form = new FormData(formEvent.currentTarget);
     await onSave(Object.fromEntries(form.entries()));
   }
-  return <Panel title="Datos generales y CRM del cliente"><form className="record-form" onSubmit={submit} key={`${event.id}-${event.name}-${event.client}`}>
+  return <Panel title="Datos generales y CRM del cliente"><form className="record-form" onSubmit={submit} key={`${event.id}-${event.name}-${event.client}-${event.date}-${event.startTime??""}-${event.endTime??""}`}>
     <label className="wide">Nombre del evento<input name="name" defaultValue={event.name} required /></label>
     <label>Cliente<input name="client" defaultValue={event.client} required /></label>
     <label>Teléfono<input name="phone" type="tel" defaultValue={event.phone} /></label>
     <label>Correo electrónico<input name="email" type="email" defaultValue={event.email} /></label>
     <label>Local<select name="venue" defaultValue={event.venue}>{["Vive Roda","Olympic","Torre del Rame","Tapeoteca",event.venue].filter((value,index,array)=>array.indexOf(value)===index).map(value=><option key={value}>{value}</option>)}</select></label>
-    <label>Fecha<input name="date" defaultValue={event.date} required /></label>
+    <label>Fecha<input name="date" type="date" defaultValue={event.date} required /></label>
+    <label>Hora de inicio<input name="startTime" type="time" defaultValue={event.startTime??""} /></label>
+    <label>Hora de finalización<input name="endTime" type="time" defaultValue={event.endTime??""} /></label>
+    <label>Fecha final, si cambia de día<input name="endDate" type="date" defaultValue={event.endDate??""} /></label>
     <label>Comensales<input name="pax" type="number" min="1" defaultValue={event.pax} required /></label>
     <label>Estado<select name="status" defaultValue={event.status}>{["Lead","Entrevista","Presupuesto","Pendiente anticipo","Confirmado","Operativa","Finalizado","Cancelado",event.status].filter((value,index,array)=>array.indexOf(value)===index).map(value=><option key={value}>{value}</option>)}</select></label>
-    <div className="form-actions wide"><small>Estos datos alimentan el CRM, el presupuesto y las órdenes operativas.</small><button className="primary" disabled={saving}>{saving?"Guardando…":"Guardar ficha"}</button></div>
+    <p className="form-hint wide">Sin horas, Calendar lo tratará como una reserva de día completo. Si la hora final es menor que la inicial, se entenderá que finaliza al día siguiente.</p>
+    <div className="form-actions wide"><small>Al cambiar fecha, horario o local, Calendar quedará pendiente de sincronizar.</small><button className="primary" disabled={saving}>{saving?"Guardando…":"Guardar ficha"}</button></div>
   </form></Panel>;
+}
+
+function CalendarSyncCard({calendar,loading,busy,error,onSync,onReload}:{calendar:CalendarState|null;loading:boolean;busy:boolean;error:string;onSync:()=>void;onReload:()=>void}) {
+  const status=calendar?.status??"pending",canSync=!loading&&!busy&&status!=="not_configured";
+  return <section className={`calendar-sync-card ${status}`} aria-live="polite" aria-busy={loading||busy}>
+    <div className="calendar-sync-summary"><span className="calendar-sync-icon">▣</span><div><p className="eyebrow">GOOGLE CALENDAR</p><h3>{loading?"Consultando sincronización…":calendar?calendarStatusLabel(calendar.status):"Estado no disponible"}</h3><small>{calendar?.dirty?"Hay cambios de la ficha pendientes de enviar":formatSyncTime(calendar?.syncedAt)}</small></div></div>
+    {calendar?.targets?.length?<div className="calendar-targets">{calendar.targets.map(target=><div className="calendar-target" key={target.key}><div><strong>{target.label}</strong><span className={`calendar-list-status ${target.status}`}>{calendarStatusLabel(target.status)}</span></div><small>{target.error||formatSyncTime(target.syncedAt)}</small>{target.htmlLink&&<a href={target.htmlLink} target="_blank" rel="noopener noreferrer">Abrir en Calendar ↗</a>}</div>)}</div>:!loading&&!error&&<p className="calendar-empty">Sin calendarios de destino disponibles.</p>}
+    {error&&<div className="calendar-sync-error" role="alert"><span>{error}</span><button type="button" onClick={onReload}>Reintentar consulta</button></div>}
+    <div className="calendar-actions"><small>La sincronización actualiza el calendario maestro y, si está configurado, el del local.</small><button type="button" className="secondary" disabled={!canSync} onClick={onSync}>{busy?"Sincronizando…":status==="error"||status==="partial"?"Reintentar sincronización":"Sincronizar ahora"}</button></div>
+  </section>;
 }
 
 function BudgetPanel({budgets,saving,onSave}:{budgets:Budget[];saving:boolean;onSave:(data:Record<string,unknown>)=>Promise<boolean>}) {
